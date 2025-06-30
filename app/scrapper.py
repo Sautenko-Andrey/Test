@@ -134,6 +134,29 @@ def parse_price_usd(soup: BeautifulSoup) -> int | None:
     return int(clean_price) if clean_price.isdigit() else None
 
 
+def parse_odometer(soup: BeautifulSoup) -> int | None:
+    """
+        Method parses an odometer field of the car page
+        and returns it as an integer. If it fails,
+        then method returns None.
+    """
+
+    # Get an odometer value via span.size18 selector
+    odometer = soup.select_one("span.size18")
+    
+    if not odometer:
+        return None
+    
+    result = odometer.get_text(strip=True)
+    
+    try:
+        # Convert value (Example: 95 -> 95000)
+        return int(float(result) * 1000)
+    
+    except ValueError:
+        return None
+
+
 async def main():
 
     # Create a session and execute fetch_html
@@ -169,8 +192,13 @@ async def main():
     else:
         print("Couldn't parse a title of the car page")
 
+    # Price parser
     price  = parse_price_usd(bs)
     print(price) if price else print("Couldn't parse a price of the car page")
+
+    # Odometer parser
+    odometer_value = parse_odometer(bs)
+    print(odometer_value) if odometer_value else print("Couldn't parse an odometer value of the car page")
 
 
 
