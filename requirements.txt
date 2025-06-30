@@ -3,3 +3,4 @@ asyncpg
 beautifulsoup4
 APScheduler
 python-dotenv
+lxml
