@@ -19,6 +19,7 @@ async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     """
     async with session.get(url) as resp:
 
+        # Rise the exception if fail
         resp.raise_for_status()
 
         return await resp.text()
@@ -40,7 +41,7 @@ def parse_links(html: str) -> list[str]:
     all_links = []
 
     for card in all_cards:
-        # 2) Читаем относительный путь из атрибута
+        # Read a path from the attribute
         current_path = card["data-link-to-view"]
 
         # Skip if there is no path to card
@@ -56,6 +57,51 @@ def parse_links(html: str) -> list[str]:
     return all_links
 
 
+def get_reference_on_next_page(html:str) ->str | None:
+    """
+    Method finds <a class="page-link active">.
+    Use its next selcetor<a class="page-link"> and
+    returns its href. 
+    Otherwise return None.
+    """
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    # Find the <nav> element that contains pagination
+    #  links (has class "pager")
+    nav = soup.select_one("nav.pager")
+    if not nav:
+        return None
+
+    # Inside the nav find the active page <a> tag (class="page-link active")
+    active_a = nav.find("a", class_="page-link active")
+    if not active_a:
+        return None
+
+    # Find its parent container
+    page_item = active_a.find_parent("span")
+    if not page_item:
+        return None
+
+    # Find the next sibling <span> element (the link to the next page)
+    next_item = page_item.find_next_sibling("span")
+    if not next_item:
+        return None
+
+    # Inside that <span>, find the <a class="page-link"> tag
+    next_a = next_item.find("a", class_="page-link")
+    
+    if not next_a or not next_a.has_attr("href"):
+        return None
+
+    href = next_a["href"].strip()
+    # Ignore"javascript:void(0)"
+    if not href or href.startswith("javascript"):
+        return None
+
+    return urljoin(START_URL, href)
+
+
 async def main():
 
     # Create a session and execute fetch_html
@@ -68,6 +114,13 @@ async def main():
     # Print it
     for url in links:
         print(url)
+
+    # Is here a reference on the next page?
+    next_page = get_reference_on_next_page(html)
+    if next_page:
+        print(next_page)
+    else:
+        print("Couldn't fimd a reference on the next page.")
 
 if __name__ == "__main__":
     asyncio.run(main())
