@@ -155,6 +155,17 @@ def parse_odometer(soup: BeautifulSoup) -> int | None:
     
     except ValueError:
         return None
+    
+
+def parse_username(soup: BeautifulSoup) -> str | None:
+    """
+        Method parses a user name field of the car page
+        and returns it as string. If it fails,
+        then method returns None.
+    """
+    name = soup.select_one("#userInfoBlock .seller_info_name.bold a.sellerPro")
+
+    return name.get_text(strip=True) if name else None
 
 
 async def main():
@@ -200,7 +211,9 @@ async def main():
     odometer_value = parse_odometer(bs)
     print(odometer_value) if odometer_value else print("Couldn't parse an odometer value of the car page")
 
-
+    # Username parser
+    username = parse_username(bs)
+    print(username) if username else print("Couldn't parse an username value of the car page")
 
 if __name__ == "__main__":
     asyncio.run(main())
