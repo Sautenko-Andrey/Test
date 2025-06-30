@@ -102,6 +102,20 @@ def get_reference_on_next_page(html:str) ->str | None:
     return urljoin(START_URL, href)
 
 
+# Fields parsers
+def parse_title(bs: BeautifulSoup) -> str | None:
+    """
+        Method parses a title of the car page
+        and returns it as a string. If it fails,
+        then method returns None.
+    """
+
+    # Title uses h1.head selector
+    title = bs.select_one("h1.head")
+
+    return title.get_text(strip=True) if title else None
+
+
 async def main():
 
     # Create a session and execute fetch_html
@@ -121,6 +135,22 @@ async def main():
         print(next_page)
     else:
         print("Couldn't fimd a reference on the next page.")
+
+    # Test fields parsers**********************************************
+
+    # Title parser
+    car_url = "https://auto.ria.com/uk/auto_mazda_cx_30_38402227.html"
+    async with aiohttp.ClientSession() as session:
+        html = await fetch_html(session, car_url)
+    
+    bs = BeautifulSoup(html, "lxml")
+    title = parse_title(bs)
+    if title:
+        print(title)
+    else:
+        print("Couldn't parse a title of the car page")
+
+        
 
 if __name__ == "__main__":
     asyncio.run(main())
