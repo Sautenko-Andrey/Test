@@ -116,6 +116,24 @@ def parse_title(bs: BeautifulSoup) -> str | None:
     return title.get_text(strip=True) if title else None
 
 
+def parse_price_usd(soup: BeautifulSoup) -> int | None:
+    """
+        Method parses a price field of the car page
+        and returns it as an integer. If it fails,
+        then method returns None.
+    """
+    price = soup.select_one("div.price_value")
+    
+    if not price:
+        return None
+    
+    # Clean price string and get a pure integer
+    # Replace spaces and $ with ""
+    clean_price = price.get_text(strip=True).replace(" ", "").replace("$", "")
+
+    return int(clean_price) if clean_price.isdigit() else None
+
+
 async def main():
 
     # Create a session and execute fetch_html
@@ -138,19 +156,23 @@ async def main():
 
     # Test fields parsers**********************************************
 
-    # Title parser
     car_url = "https://auto.ria.com/uk/auto_mazda_cx_30_38402227.html"
     async with aiohttp.ClientSession() as session:
         html = await fetch_html(session, car_url)
     
     bs = BeautifulSoup(html, "lxml")
+
+    # Title parser
     title = parse_title(bs)
     if title:
         print(title)
     else:
         print("Couldn't parse a title of the car page")
 
-        
+    price  = parse_price_usd(bs)
+    print(price) if price else print("Couldn't parse a price of the car page")
+
+
 
 if __name__ == "__main__":
     asyncio.run(main())
