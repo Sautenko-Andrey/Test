@@ -4,7 +4,7 @@ from datetime import datetime
 from urllib.parse import urljoin     
 import aiohttp
 from bs4 import BeautifulSoup  
-
+import json
 
 
 # import re
@@ -231,20 +231,25 @@ def parse_username(soup: BeautifulSoup) -> str | None:
 
 
 #========================================================================
-# 1) Создаём и настраиваем единый драйвер
+# Make a single driver
 def create_driver() -> webdriver.Chrome:
+
     options = webdriver.ChromeOptions()
-    # headless-режим
+
+    # headless-regime
     options.add_argument("--headless=new")
     options.add_argument("--disable-gpu")
-    # отключаем картинки, стили, шрифты
+    
+    # turn off images, shrifts, styles
     prefs = {
         "profile.managed_default_content_settings.images": 2,
         "profile.managed_default_content_settings.stylesheets": 2,
         "profile.managed_default_content_settings.fonts": 2,
     }
+
     options.add_experimental_option("prefs", prefs)
-    # блокируем мультимедиа через CDP
+
+    # block multimedia(optimising)
     driver = webdriver.Chrome(
         service=ChromeService(ChromeDriverManager().install()),
         options=options
@@ -253,18 +258,20 @@ def create_driver() -> webdriver.Chrome:
     driver.execute_cdp_cmd("Network.setBlockedURLs", {
         "urls": ["*.png", "*.jpg", "*.jpeg", "*.gif", "*.css", "*.woff2", "*.ttf"]
     })
+
     return driver
 
-# 2) Функция вытягивает телефон из одной страницы
+# Phone parser
 def fetch_phone(driver: webdriver.Chrome,
                 detail_url: str,
                 timeout: float = 5.0,
                 poll: float = 0.1) -> str | None:
+    
     wait = WebDriverWait(driver, timeout, poll_frequency=poll)
     driver.set_page_load_timeout(timeout)
     driver.get(detail_url)
 
-    # 2.1) Закрываем возможный оверлей (например c-notifier)
+    # Close a possible overlay
     try:
         btn_close = WebDriverWait(driver, 2, poll_frequency=poll).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, ".c-notifier-close"))
@@ -272,34 +279,62 @@ def fetch_phone(driver: webdriver.Chrome,
         btn_close.click()
         wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".c-notifier-container")))
     except TimeoutException:
-        pass  # оверлей не появился
+        pass  # no overlay here
 
-    # 2.2) Находим и кликаем по кнопке «Показати»
+    # Find and click on button "показати"
     btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.phone_show_link")))
-    # скролл и JS-клик
+    
+    # scroll and js click
     driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
     driver.execute_script("arguments[0].click();", btn)
 
-    # 2.3) Ждём появления элемента с номером
+    # Wait for an element with a number
     phone_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "span.phone.bold")))
-    raw = phone_el.text  # например "(067) 950 96 07"
+    
+    # Get the number
+    raw = phone_el.text  # (067) 950 96 07"
 
-    # 2.4) Очищаем до цифр
+    # Clear the number
     digits = re.sub(r"\D", "", raw)
+
     return digits or None
 
 #========================================================================
 
+# Image info
+def parse_image_info(bs: BeautifulSoup) -> tuple[str|None, int]:
+
+    """
+        Method fetches an url of the main image and counts total images
+        of the car on the page.
+    """
+
+    # Find and fetch main image url
+    meta = bs.select_one("meta[property='og:image']")
+
+    main_url = meta["content"] if meta and meta.has_attr("content") else None
+
+    # Find all images
+    all_imgs = bs.find_all("img", src=True)
+
+    # Filter images which locate in the gallery
+    thumbs = set()
+    for img in all_imgs:
+        url = img["src"]
+        # Select only with '30__' or 'gallery'
+        if "30__" in url or "/gallery/" in url:
+            thumbs.add(url)
+
+    return main_url, len(thumbs)
+
+
+
 async def main():
 
-    # url = "https://auto.ria.com/uk/auto_mazda_cx_30_38402227.html"
-    # phone = fetch_phone_with_chrome(url)
-    # print("RESULT →", phone)
-
+    #Phone
     car_urls = [
         "https://auto.ria.com/uk/auto_mazda_cx_30_38402227.html",
-        "https://auto.ria.com/auto_porsche_cayenne_38301045.html",
-        # ... другие ссылки
+        "https://auto.ria.com/auto_porsche_cayenne_38301045.html"
     ]
 
     driver = create_driver()
@@ -314,8 +349,6 @@ async def main():
     async with aiohttp.ClientSession() as session:
         html = await fetch_html(session, START_URL)
 
-    # Phone
-    
     
     # Get all available links
     links = parse_links(html)
@@ -359,7 +392,10 @@ async def main():
     username = parse_username(bs)
     print(username) if username else print("Couldn't parse an username value of the car page")
 
-    # Phone parser
+    # Image url parser
+    image_url, image_count = parse_image_info(bs)
+    print(f"url:{image_url}, count:{image_count}")
+    
 
 if __name__ == "__main__":
     asyncio.run(main())
