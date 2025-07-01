@@ -7,15 +7,6 @@ from bs4 import BeautifulSoup
 import json
 
 
-# import re
-# from selenium import webdriver
-# from selenium.webdriver.chrome.service import Service as ChromeService
-# from selenium.webdriver.common.by import By
-# from selenium.webdriver.support.ui import WebDriverWait
-# from selenium.webdriver.support import expected_conditions as EC
-# from selenium.common.exceptions import TimeoutException
-# from webdriver_manager.chrome import ChromeDriverManager
-
 import re
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service as ChromeService
@@ -189,47 +180,6 @@ def parse_username(soup: BeautifulSoup) -> str | None:
     return name.get_text(strip=True) if name else None
 
 
-#**************************************************************************
-# def fetch_phone_with_chrome(detail_url: str, timeout: int = 10) -> str | None:
-#     path = ChromeDriverManager().install()
-#     options = webdriver.ChromeOptions()
-#     options.add_argument("--headless=new")
-#     options.add_argument("--disable-gpu")
-#     driver = webdriver.Chrome(service=ChromeService(path), options=options)
-
-#     try:
-#         driver.set_page_load_timeout(timeout)
-#         driver.get(detail_url)
-
-#         wait = WebDriverWait(driver, timeout)
-
-#         # 1) Закрываем возможный баннер/уведомление
-#         try:
-#             notif_close = WebDriverWait(driver, 3).until(
-#                 EC.element_to_be_clickable((By.CSS_SELECTOR, ".c-notifier-close"))
-#             )
-#             notif_close.click()
-#             wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".c-notifier-container")))
-#         except TimeoutException:
-#             pass
-
-#         # 2) Скроллим и кликаем по кнопке «Показати»
-#         btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.phone_show_link")))
-#         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
-#         driver.execute_script("arguments[0].click();", btn)
-
-#         # 3) Ждём появления номера
-#         phone_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "span.phone.bold")))
-#         raw = phone_el.text
-
-#         # 4) Очищаем до цифр
-#         return re.sub(r"\D", "", raw) or None
-
-#     finally:
-#         driver.quit()
-#****************************************************************************
-
-
 #========================================================================
 # Make a single driver
 def create_driver() -> webdriver.Chrome:
@@ -328,6 +278,44 @@ def parse_image_info(bs: BeautifulSoup) -> tuple[str|None, int]:
     return main_url, len(thumbs)
 
 
+# Parser for car number and car vin
+def parse_identifiers(bs: BeautifulSoup):
+    """
+        Find and fetch car number and vin. Return it as tuple.
+    """
+
+    # number in <span class="state-num ua">
+    plate = None
+
+    plate_el = bs.select_one("span.state-num.ua")
+
+    if plate_el:
+
+        # First part of text before nested tags
+        raw = plate_el.find(text=True, recursive=False)
+
+        if raw:
+            # Fetch format «XX 1234 XX» via re
+            m = re.search(r"[A-ZА-Я]{1,3}\s*\d{1,4}\s*[A-ZА-Я]{1,3}", raw)
+
+            plate = m.group(0).strip() if m else raw.strip()
+
+    # All text inside <span class="label-vin">
+    vin = None
+
+    vin_el = bs.select_one("span.label-vin")
+
+    if vin_el:
+
+        raw_vin = vin_el.get_text(strip=True)
+
+        # Leave only letters and digits
+        m2 = re.search(r"[A-HJ-NPR-Z0-9]{10,17}", raw_vin)
+
+        vin = m2.group(0) if m2 else raw_vin
+
+    return plate, vin
+
 
 async def main():
 
@@ -395,6 +383,10 @@ async def main():
     # Image url parser
     image_url, image_count = parse_image_info(bs)
     print(f"url:{image_url}, count:{image_count}")
+
+    # Parse indetifiers
+    number,vin = parse_identifiers(bs)
+    print(f"number:{number}, vin:{vin}")
     
 
 if __name__ == "__main__":
