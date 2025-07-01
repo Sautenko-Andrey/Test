@@ -4,3 +4,5 @@ beautifulsoup4
 APScheduler
 python-dotenv
 lxml
+selenium
+webdriver-manager

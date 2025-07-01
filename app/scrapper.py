@@ -6,8 +6,29 @@ import aiohttp
 from bs4 import BeautifulSoup  
 
 
-# Basic url
+
+# import re
+# from selenium import webdriver
+# from selenium.webdriver.chrome.service import Service as ChromeService
+# from selenium.webdriver.common.by import By
+# from selenium.webdriver.support.ui import WebDriverWait
+# from selenium.webdriver.support import expected_conditions as EC
+# from selenium.common.exceptions import TimeoutException
+# from webdriver_manager.chrome import ChromeDriverManager
+
+import re
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+from webdriver_manager.chrome import ChromeDriverManager
+
+
+# Basic urls
 START_URL = os.getenv("START_URL")
+
 
 async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
     """
@@ -168,11 +189,133 @@ def parse_username(soup: BeautifulSoup) -> str | None:
     return name.get_text(strip=True) if name else None
 
 
+#**************************************************************************
+# def fetch_phone_with_chrome(detail_url: str, timeout: int = 10) -> str | None:
+#     path = ChromeDriverManager().install()
+#     options = webdriver.ChromeOptions()
+#     options.add_argument("--headless=new")
+#     options.add_argument("--disable-gpu")
+#     driver = webdriver.Chrome(service=ChromeService(path), options=options)
+
+#     try:
+#         driver.set_page_load_timeout(timeout)
+#         driver.get(detail_url)
+
+#         wait = WebDriverWait(driver, timeout)
+
+#         # 1) Закрываем возможный баннер/уведомление
+#         try:
+#             notif_close = WebDriverWait(driver, 3).until(
+#                 EC.element_to_be_clickable((By.CSS_SELECTOR, ".c-notifier-close"))
+#             )
+#             notif_close.click()
+#             wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".c-notifier-container")))
+#         except TimeoutException:
+#             pass
+
+#         # 2) Скроллим и кликаем по кнопке «Показати»
+#         btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.phone_show_link")))
+#         driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", btn)
+#         driver.execute_script("arguments[0].click();", btn)
+
+#         # 3) Ждём появления номера
+#         phone_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "span.phone.bold")))
+#         raw = phone_el.text
+
+#         # 4) Очищаем до цифр
+#         return re.sub(r"\D", "", raw) or None
+
+#     finally:
+#         driver.quit()
+#****************************************************************************
+
+
+#========================================================================
+# 1) Создаём и настраиваем единый драйвер
+def create_driver() -> webdriver.Chrome:
+    options = webdriver.ChromeOptions()
+    # headless-режим
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-gpu")
+    # отключаем картинки, стили, шрифты
+    prefs = {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.managed_default_content_settings.stylesheets": 2,
+        "profile.managed_default_content_settings.fonts": 2,
+    }
+    options.add_experimental_option("prefs", prefs)
+    # блокируем мультимедиа через CDP
+    driver = webdriver.Chrome(
+        service=ChromeService(ChromeDriverManager().install()),
+        options=options
+    )
+    driver.execute_cdp_cmd("Network.enable", {})
+    driver.execute_cdp_cmd("Network.setBlockedURLs", {
+        "urls": ["*.png", "*.jpg", "*.jpeg", "*.gif", "*.css", "*.woff2", "*.ttf"]
+    })
+    return driver
+
+# 2) Функция вытягивает телефон из одной страницы
+def fetch_phone(driver: webdriver.Chrome,
+                detail_url: str,
+                timeout: float = 5.0,
+                poll: float = 0.1) -> str | None:
+    wait = WebDriverWait(driver, timeout, poll_frequency=poll)
+    driver.set_page_load_timeout(timeout)
+    driver.get(detail_url)
+
+    # 2.1) Закрываем возможный оверлей (например c-notifier)
+    try:
+        btn_close = WebDriverWait(driver, 2, poll_frequency=poll).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, ".c-notifier-close"))
+        )
+        btn_close.click()
+        wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".c-notifier-container")))
+    except TimeoutException:
+        pass  # оверлей не появился
+
+    # 2.2) Находим и кликаем по кнопке «Показати»
+    btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.phone_show_link")))
+    # скролл и JS-клик
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+    driver.execute_script("arguments[0].click();", btn)
+
+    # 2.3) Ждём появления элемента с номером
+    phone_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "span.phone.bold")))
+    raw = phone_el.text  # например "(067) 950 96 07"
+
+    # 2.4) Очищаем до цифр
+    digits = re.sub(r"\D", "", raw)
+    return digits or None
+
+#========================================================================
+
 async def main():
+
+    # url = "https://auto.ria.com/uk/auto_mazda_cx_30_38402227.html"
+    # phone = fetch_phone_with_chrome(url)
+    # print("RESULT →", phone)
+
+    car_urls = [
+        "https://auto.ria.com/uk/auto_mazda_cx_30_38402227.html",
+        "https://auto.ria.com/auto_porsche_cayenne_38301045.html",
+        # ... другие ссылки
+    ]
+
+    driver = create_driver()
+    try:
+        for link in car_urls:
+            phone = fetch_phone(driver, link)
+            print(link, "→", phone)
+    finally:
+        driver.quit()
 
     # Create a session and execute fetch_html
     async with aiohttp.ClientSession() as session:
         html = await fetch_html(session, START_URL)
+
+    # Phone
+    
     
     # Get all available links
     links = parse_links(html)
@@ -193,6 +336,7 @@ async def main():
     car_url = "https://auto.ria.com/uk/auto_mazda_cx_30_38402227.html"
     async with aiohttp.ClientSession() as session:
         html = await fetch_html(session, car_url)
+
     
     bs = BeautifulSoup(html, "lxml")
 
@@ -214,6 +358,8 @@ async def main():
     # Username parser
     username = parse_username(bs)
     print(username) if username else print("Couldn't parse an username value of the car page")
+
+    # Phone parser
 
 if __name__ == "__main__":
     asyncio.run(main())
