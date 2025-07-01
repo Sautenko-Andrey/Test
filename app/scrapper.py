@@ -3,100 +3,143 @@ import asyncio
 from datetime import datetime         
 from urllib.parse import urljoin     
 import aiohttp
-from bs4 import BeautifulSoup  
-import json
-
-
+from aiohttp import ClientResponseError
+from datetime import datetime
+from bs4 import BeautifulSoup
 import re
+import random
 from selenium import webdriver
-from selenium.webdriver.chrome.service import Service as ChromeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
+from selenium.common.exceptions import (
+    TimeoutException,
+    WebDriverException
+)
 
-
-# Basic urls
+# Basic url
 START_URL = os.getenv("START_URL")
 
+# Http requests limits
+_HTTP_SEM   = asyncio.Semaphore(5)
 
-async def fetch_html(session: aiohttp.ClientSession, url: str) -> str:
+# cards parsers limits
+_DETAIL_SEM = asyncio.Semaphore(5)
+
+# lock for the single driver
+_PHONE_LOCK = asyncio.Lock()
+
+
+# Make the single driver
+def _create_driver():
+
     """
-        Method sends a get-request using url argument,
-        then checks resonse status and if it's not 200
-        it raises exception.
-        If everything is ok, it returns string (html) and
-        this string is ready for parsing.
+        Function create a driver.
     """
-    async with session.get(url) as resp:
 
-        # Rise the exception if fail
-        resp.raise_for_status()
+    # Set up options
+    opts = Options()
+    opts.add_argument("--headless=new")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    opts.page_load_strategy = "eager"
+    opts.add_experimental_option("prefs", {
+        "profile.managed_default_content_settings.images": 2,
+        "profile.managed_default_content_settings.stylesheets": 2,
+        "profile.managed_default_content_settings.fonts": 2
+    })
 
-        return await resp.text()
-    
+    service = Service(ChromeDriverManager().install())
+
+    driver = webdriver.Chrome(service=service, options=opts)
+
+    driver.set_page_load_timeout(15)
+
+    return driver
+
+_DRIVER = _create_driver()
+
+
+async def fetch_html(session: aiohttp.ClientSession, url: str, retries=3):
+    """
+        Fetch a html file using timeouts and retries
+    """
+    for i in range(retries):
+        async with _HTTP_SEM:
+            try:
+                async with session.get(url, timeout=10) as r:
+                    r.raise_for_status()
+                    return await r.text()
+            except ClientResponseError as e:
+                if e.status == 429 and i < retries-1:
+                    await asyncio.sleep(1 + 2**i * random.random())
+                    continue
+                raise
+            except asyncio.TimeoutError:
+                if i < retries-1:
+                    await asyncio.sleep(1 + random.random())
+                    continue
+                raise
+    raise RuntimeError("fetch_html failed")
 
 
 def parse_links(html: str) -> list[str]:
     """
-        Method parses and saves all links on cards
-        and returns as list of strings.
+        Fetch data-link-to-view and return absolute URL.
     """
     bs = BeautifulSoup(html, "lxml")
-    
-    # Find all div.hide, which have data-link-to-view
-    all_cards = bs.find_all("div", class_="hide",
-                          attrs={"data-link-to-view": True})
-    
-    # Here we will store all references to cards
-    all_links = []
 
-    for card in all_cards:
-        # Read a path from the attribute
-        current_path = card["data-link-to-view"]
+    cards = bs.find_all("div", class_="hide", attrs={"data-link-to-view": True})
+    
+    links = []
 
-        # Skip if there is no path to card
-        if not current_path:
+    for card in cards:
+        rel = card["data-link-to-view"].strip()
+
+        if not rel:
             continue
-        
-        # Make URL
-        url = urljoin(START_URL, current_path)
+        # make full path
+        full_path = urljoin(START_URL, rel)
+        links.append(full_path)
 
-        # Add to the list
-        all_links.append(url)
-    
-    return all_links
+    return links
 
 
-def get_reference_on_next_page(html:str) ->str | None:
+def get_reference_on_next_page(html:str) -> str | None:
     """
-    Method finds <a class="page-link active">.
-    Use its next selcetor<a class="page-link"> and
-    returns its href. 
-    Otherwise return None.
+        Method finds <a class="page-link active">.
+        Use its next selcetor<a class="page-link"> and
+        returns its href. 
+        Otherwise return None.
     """
 
-    soup = BeautifulSoup(html, "html.parser")
+    bs = BeautifulSoup(html, "lxml")
 
     # Find the <nav> element that contains pagination
     #  links (has class "pager")
-    nav = soup.select_one("nav.pager")
+    nav = bs.select_one("nav.pager")
     if not nav:
         return None
 
     # Inside the nav find the active page <a> tag (class="page-link active")
     active_a = nav.find("a", class_="page-link active")
+
     if not active_a:
         return None
 
     # Find its parent container
     page_item = active_a.find_parent("span")
+
     if not page_item:
         return None
 
     # Find the next sibling <span> element (the link to the next page)
     next_item = page_item.find_next_sibling("span")
+
     if not next_item:
         return None
 
@@ -180,76 +223,92 @@ def parse_username(soup: BeautifulSoup) -> str | None:
     return name.get_text(strip=True) if name else None
 
 
-#========================================================================
-# Make a single driver
-def create_driver() -> webdriver.Chrome:
+# Phone parser
+def fetch_phone(detail_url: str, page_timeout: float = 15.0,
+                      wait_timeout: float = 10.0, poll: float = 0.2) -> str | None:
+    """
+        Try to fetch a phone number from car page.
+        If something goes wrong (timeout, no button, no number) just return None
+        Note: using Selenium!
+    """
 
-    options = webdriver.ChromeOptions()
-
-    # headless-regime
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-gpu")
-    
-    # turn off images, shrifts, styles
-    prefs = {
+    opts = Options()
+    opts.add_argument("--headless=new")
+    opts.add_argument("--disable-gpu")
+    opts.add_argument("--no-sandbox")
+    opts.page_load_strategy = "eager"
+    opts.add_experimental_option("prefs", {
         "profile.managed_default_content_settings.images": 2,
         "profile.managed_default_content_settings.stylesheets": 2,
-        "profile.managed_default_content_settings.fonts": 2,
-    }
-
-    options.add_experimental_option("prefs", prefs)
-
-    # block multimedia(optimising)
-    driver = webdriver.Chrome(
-        service=ChromeService(ChromeDriverManager().install()),
-        options=options
-    )
-    driver.execute_cdp_cmd("Network.enable", {})
-    driver.execute_cdp_cmd("Network.setBlockedURLs", {
-        "urls": ["*.png", "*.jpg", "*.jpeg", "*.gif", "*.css", "*.woff2", "*.ttf"]
     })
 
-    return driver
+    service = Service(ChromeDriverManager().install())
+    driver  = webdriver.Chrome(service=service, options=opts)
+    driver.set_page_load_timeout(page_timeout)
 
-# Phone parser
-def fetch_phone(driver: webdriver.Chrome,
-                detail_url: str,
-                timeout: float = 5.0,
-                poll: float = 0.1) -> str | None:
-    
-    wait = WebDriverWait(driver, timeout, poll_frequency=poll)
-    driver.set_page_load_timeout(timeout)
-    driver.get(detail_url)
-
-    # Close a possible overlay
     try:
-        btn_close = WebDriverWait(driver, 2, poll_frequency=poll).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, ".c-notifier-close"))
-        )
-        btn_close.click()
-        wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".c-notifier-container")))
-    except TimeoutException:
-        pass  # no overlay here
+        # Loading
+        try:
+            driver.get(detail_url)
+            
+        except TimeoutException:
+            print("fetch_phone: page load timeout")
+            return None
 
-    # Find and click on button "показати"
-    btn = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "a.phone_show_link")))
-    
-    # scroll and js click
-    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
-    driver.execute_script("arguments[0].click();", btn)
+        wait = WebDriverWait(driver, wait_timeout, poll_frequency=poll)
 
-    # Wait for an element with a number
-    phone_el = wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, "span.phone.bold")))
-    
-    # Get the number
-    raw = phone_el.text  # (067) 950 96 07"
+        # If thereis is an overlay, then close it.
+        try:
+            btn_close = wait.until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, ".c-notifier-close"))
+            )
 
-    # Clear the number
-    digits = re.sub(r"\D", "", raw)
+            btn_close.click()
 
-    return digits or None
+            wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, ".c-notifier-container")))
+        except TimeoutException:
+            # There is no overlay, do nothing
+            pass
 
-#========================================================================
+        # Check if there is a button with name “показати”
+        elems = driver.find_elements(By.CSS_SELECTOR, "a.phone_show_link")
+
+        if not elems:
+            # No button on the page or a number loads too long
+            print("fetch_phone: no phone_show_link on page")
+            return None
+
+        btn = elems[0]
+        # scroll + click
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'});", btn)
+        try:
+            btn.click()
+        except WebDriverException:
+            # execute via JS
+            driver.execute_script("arguments[0].click();", btn)
+
+        # Waiting a phone number shows up
+        try:
+            phone_el = wait.until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, "span.phone.bold"))
+            )
+        except TimeoutException:
+            print("fetch_phone: timeout waiting for span.phone.bold")
+            return None
+
+        raw = phone_el.text or ""
+        digits = re.sub(r"\D", "", raw)
+        return digits or None
+
+    except WebDriverException as e:
+        # if unfirtunately fall down into WebDriverException
+        print(f"fetch_phone: unexpected error {e.__class__.__name__}: {e!r}")
+        return None
+
+    finally:
+        driver.quit()
+
+
 
 # Image info
 def parse_image_info(bs: BeautifulSoup) -> tuple[str|None, int]:
@@ -317,77 +376,44 @@ def parse_identifiers(bs: BeautifulSoup):
     return plate, vin
 
 
-async def main():
-
-    #Phone
-    car_urls = [
-        "https://auto.ria.com/uk/auto_mazda_cx_30_38402227.html",
-        "https://auto.ria.com/auto_porsche_cayenne_38301045.html"
-    ]
-
-    driver = create_driver()
-    try:
-        for link in car_urls:
-            phone = fetch_phone(driver, link)
-            print(link, "→", phone)
-    finally:
-        driver.quit()
-
-    # Create a session and execute fetch_html
-    async with aiohttp.ClientSession() as session:
-        html = await fetch_html(session, START_URL)
-
+# The main parser
+async def parse_detail(session: aiohttp.ClientSession, url: str) -> dict:
     
-    # Get all available links
-    links = parse_links(html)
-    
-    # Print it
-    for url in links:
-        print(url)
+    """
+        The main parser wich uses all above parsers to fetch the content
+        from AUTORIA web-site.
+    """
 
-    # Is here a reference on the next page?
-    next_page = get_reference_on_next_page(html)
-    if next_page:
-        print(next_page)
-    else:
-        print("Couldn't fimd a reference on the next page.")
+    async with _DETAIL_SEM:
+        html = await fetch_html(session, url)
+        soup = BeautifulSoup(html, "lxml")
 
-    # Test fields parsers**********************************************
+        # Parse all excludong Selenium tasks
+        title, price, odo = parse_title(soup), parse_price_usd(soup), parse_odometer(soup)
+        
+        user = parse_username(soup)
+        
+        img_url, img_cnt = parse_image_info(soup)
+        
+        plate, vin = parse_identifiers(soup)
 
-    car_url = "https://auto.ria.com/uk/auto_mazda_cx_30_38402227.html"
-    async with aiohttp.ClientSession() as session:
-        html = await fetch_html(session, car_url)
+        # And now parse a phone number using lock 
+        async with _PHONE_LOCK:
+            phone = await asyncio.to_thread(fetch_phone, url)
 
-    
-    bs = BeautifulSoup(html, "lxml")
+        # a small pause
+        await asyncio.sleep(random.uniform(0.1,0.3))
 
-    # Title parser
-    title = parse_title(bs)
-    if title:
-        print(title)
-    else:
-        print("Couldn't parse a title of the car page")
-
-    # Price parser
-    price  = parse_price_usd(bs)
-    print(price) if price else print("Couldn't parse a price of the car page")
-
-    # Odometer parser
-    odometer_value = parse_odometer(bs)
-    print(odometer_value) if odometer_value else print("Couldn't parse an odometer value of the car page")
-
-    # Username parser
-    username = parse_username(bs)
-    print(username) if username else print("Couldn't parse an username value of the car page")
-
-    # Image url parser
-    image_url, image_count = parse_image_info(bs)
-    print(f"url:{image_url}, count:{image_count}")
-
-    # Parse indetifiers
-    number,vin = parse_identifiers(bs)
-    print(f"number:{number}, vin:{vin}")
-    
-
-if __name__ == "__main__":
-    asyncio.run(main())
+        return {
+            "url":url,
+            "title":title,
+            "price_usd":price,
+            "odometer":odo,
+            "username":user,
+            "phone_number":phone,
+            "image_url":img_url,
+            "images_count":img_cnt,
+            "car_number":plate,
+            "car_vin":vin,
+            "datetime_found": datetime.now(),
+        }
