@@ -3,6 +3,9 @@ import scrapper
 
 async def main():
 
+    print(">>> Запуск main.py")
+
+
     async with aiohttp.ClientSession() as session:
 
         url, page, all_data = scrapper.START_URL, 1, []
