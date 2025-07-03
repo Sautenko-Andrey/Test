@@ -6,3 +6,6 @@ python-dotenv
 lxml
 selenium
 webdriver-manager
+SQLAlchemy>=1.4
+psycopg2-binary>=2.9
+python-dotenv>=0.21
