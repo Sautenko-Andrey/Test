@@ -1,30 +1,29 @@
-# app/main.py
-
 import asyncio
 import aiohttp
 
 from db import engine, SessionLocal
 from models import Base, Car, AdsListing
 import scrapper
+from sqlalchemy.exc import IntegrityError
 
-# -----------------------------------------------------------------------------
-# Инициализируем схему (таблицы cars и listings) один раз при старте приложения
-# -----------------------------------------------------------------------------
+
+# Initialize the schema of darabase(cars and listings) once at the start
 Base.metadata.create_all(bind=engine)
 
 
 def save_all(items: list[dict]) -> None:
     """
-    Сохраняет список результатов парсинга в базу.
-    Вызываем после обработки каждой страницы.
+        Save a list of parsing results into database.
+        Call it after every single page processing.
     """
+
     session = SessionLocal()
     try:
         for item in items:
-            # 1) Найти существующий Car по URL
+            # Find an exsisitng car by url
             car = session.query(Car).filter_by(url=item["url"]).first()
             if not car:
-                # если не найден — создаём новую запись
+                # If couldn't find create a new record (Car)
                 car = Car(
                     url=item["url"],
                     title=item["title"],
@@ -32,9 +31,10 @@ def save_all(items: list[dict]) -> None:
                     image_url=item["image_url"]
                 )
                 session.add(car)
-                session.flush()  # нужно, чтобы car.id появился до коммита
+                # Car id has to show up before a commit
+                session.flush()
 
-            # 2) Создать запись о парсинге (Listing)
+            # Make a new record (Listing)
             listing = AdsListing(
                 car_id=car.id,
                 datetime_found=item["datetime_found"],
@@ -46,7 +46,11 @@ def save_all(items: list[dict]) -> None:
             )
             session.add(listing)
 
-        session.commit()  # один коммит на всю страницу
+        # One commit per page
+        session.commit()
+    except IntegrityError:
+        # Skip existing records
+        session.rollback()
     except:
         session.rollback()
         raise
@@ -63,15 +67,15 @@ async def main():
         while url:
             print(f"Page {page}: {url}")
 
-            # получаем HTML и ссылки на детали
+            # Get HTML
             html = await scrapper.fetch_html(session, url)
             links = scrapper.parse_links(html)
 
-            # парсим детали параллельно
+            # Parallel parsing
             tasks = [scrapper.parse_detail(session, link) for link in links]
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
-            # разделяем успешные парсы и ошибки
+            # Split succesfull and fails parsing ops
             page_data = []
             for r in results:
                 if isinstance(r, dict):
@@ -79,17 +83,17 @@ async def main():
                 else:
                     print("Error:", r)
 
-            # сохраняем результаты по этой странице
+            # Save results for the page
             if page_data:
                 save_all(page_data)
                 print(f"  Сохранено записей: {len(page_data)}")
                 total_saved += len(page_data)
 
-            # готовимся к следующей странице
+            # Prepeare for the next page
             url = scrapper.get_reference_on_next_page(html)
             page += 1
 
-    # закрываем драйвер Chrome в конце
+    # Close the driver
     scrapper._DRIVER.quit()
 
     print(f"Done, total saved: {total_saved}")
