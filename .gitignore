@@ -88,3 +88,9 @@ dumps/
 logs/
 tmp/
 app/tempCodeRunnerFile.py
+
+# SQLAlchemy
+.sqlalchemy_cache/
+*.sqlalchemy
+=*.*
+=*
